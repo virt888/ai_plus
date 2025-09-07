@@ -1,3 +1,5 @@
 /ocr_out/
 /in/
 /.venv/
+issues_scan.csv
+sections_presence.csv
