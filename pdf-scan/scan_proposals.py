@@ -14,6 +14,25 @@ import pytesseract
 import pandas as pd
 import typer
 
+def _norm_key(s: str) -> str:
+    """Lowercase + remove non-alphanumerics, e.g. 'Outcomes & Value' -> 'outcomesvalue'."""
+    import re
+    return re.sub(r"[^a-z0-9]+", "", s.lower())
+
+def build_section_key_map(section_names):
+    """
+    Build a map from normalized aliases -> canonical section key used by synonyms.
+    Also includes helpful aliases that should resolve to 'OutcomesValue'.
+    """
+    m = {_norm_key(k): k for k in section_names}
+    # Common human variants all map to OutcomesValue
+    for alias in [
+        "outcomesvalue", "outcomesandvalue", "outcome", "expectedoutcomes",
+        "keyoutcomes", "outcomesimpact", "results", "deliverables"
+    ]:
+        m.setdefault(alias, "OutcomesValue")
+    return m
+
 app = typer.Typer(add_completion=False)
 
 # ===============================
@@ -350,6 +369,7 @@ def main(
     try:
         syn_map = load_synonyms_csv(synonyms_csv)
         compiled_syn = compile_section_synonyms(syn_map)
+        section_key_map = build_section_key_map(list(compiled_syn.keys()))
     except Exception as e:
         typer.echo(f"[ERROR] Failed to load synonyms: {e}")
         raise
@@ -424,14 +444,28 @@ def main(
                         remarks = page_issue_remarks or ""
 
                 elif rtype == "missing_section":
-                    sec = str(rule.get("Section", "")).strip()
-                    if not sec:
+                    sec_raw = str(rule.get("Section", "")).strip()
+                    if not sec_raw:
                         typer.echo("[WARN] missing_section rule without 'Section' — skipped.")
                         continue
-                    present = bool(found_map.get(sec, False))
+
+                    # normalize and map to canonical section key
+                    sec_norm = _norm_key(sec_raw)
+                    canon = section_key_map.get(sec_norm)
+                    if not canon:
+                        canon = sec_raw
+                        typer.echo(f"[WARN] Section in Issues.xlsx not recognized: '{sec_raw}'. "
+                                f"Expected one of {list(compiled_syn.keys())}.")
+
+                    present = bool(found_map.get(canon, False))
                     pass_yn = "YES" if (present == must_present) else "NO"
+
+                    # ⬇️ NEW: put matched headings into MATCHED_KEYWORDS
+                    matched_labels = which_map.get(canon, []) if present else []
+
                     if not present:
                         remarks = "Section not detected"
+
 
                 else:  # keyword
                     regex = str(rule.get("Regex", ""))
