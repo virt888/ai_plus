@@ -1,5 +1,7 @@
 /ocr_out/
 /in/
+/out/
+/archived/
 /.venv/
 proposal_scan_result.csv
 sections_presence.csv
