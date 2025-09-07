@@ -358,7 +358,7 @@ def eval_keyword_rule(text: str, regex: str, must_be_present: bool,
 def main(
     input_dir: Path = typer.Option(..., "--input-dir", "-i", help="Folder containing PDFs (recursively scanned)"),
     out_sections_csv: Path = typer.Option("sections_presence.csv", "--out-sections-csv", help="Output CSV for section presence"),
-    out_issues_csv: Path = typer.Option("issues_scan.csv", "--out-issues-csv", help="Output CSV for issue rules"),
+    out_issues_csv: Path = typer.Option("proposal_scan_result.csv", "--out-issues-csv", help="Output CSV for issue rules"),
     synonyms_csv: Optional[Path] = typer.Option(None, "--synonyms-csv", "-s", help="Optional synonyms CSV (Section,KeywordRegex)"),
     issues_xlsx: Optional[Path] = typer.Option(None, "--issues-xlsx", "-x", help="Issues Excel to drive rule checks"),
     ocr_cache_dir: Path = typer.Option("ocr_out", "--ocr-cache-dir", help="Where to put OCR'ed PDFs if ocrmypdf is available"),
@@ -423,7 +423,7 @@ def main(
                 page_issue_triggered = has_issue
                 page_issue_remarks = rem
 
-            # Rows for issues_scan.csv
+            # Rows for proposal_scan_result.csv
             for rule in issue_rules:
                 rtype = str(rule["RuleType"])
                 must_present = bool(rule.get("MustBePresent", True))
