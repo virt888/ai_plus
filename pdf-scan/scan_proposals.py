@@ -20,7 +20,7 @@ DPI       = 150
 
 # Default section synonyms (used for 'sections_presence.csv' and for "missing_section" issues)
 DEFAULT_SECTION_SYNONYMS = {
-    "Title":         [r"^\s*(proposed\s+topic|title of research|project title|title)\b"],
+    "Title":         [r"^\s*(proposed\s+topic|title of research|project title|title|topic)\b"],
     "Background":    [r"^\s*(background|overview|introduction)\b"],
     "Methodology":   [r"^\s*(methodology|research methods|materials and methods)\b"],
     "OutcomesValue": [r"^\s*(outcomes?\b|value\b|findings\b|analysis)\b"],
