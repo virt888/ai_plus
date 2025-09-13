@@ -176,36 +176,136 @@ def pdf_to_text(pdf: Path, pages_limit: Optional[int]) -> str:
     return "\n".join(parts)
 
 def detect_missing_pages(pdf: Path) -> Tuple[bool, str]:
-    """Return (has_issue, remarks) for printed page number gaps / odd-even-only."""
-    re_num = re.compile(r"\bpage\s+(\d+)\b(?:\s*of\s*(\d+))?", re.I)
-    re_lone = re.compile(r"^\s*(\d{1,3})\s*$")
-    nums: List[Optional[int]] = []
+    """
+    Return (has_issue, remarks) based on printed page numbers.
+
+    Improvements:
+    - Wider patterns (brackets, en/em dashes, 3/10, 3 of 10, roman numerals).
+    - If header/footer yields few candidates, also search full page body.
+    - Greedy selection prefers the candidate closest to expected (prev+1),
+      falling back to physical page index (i+1).
+    - Flags suspicious jumps (e.g., … 10 -> 57) as a remark.
+    """
+    # Patterns: "page 3", "3 of 10", "3/10", "(3)", "[3]", "— 3 —", lone "3", roman numerals
+    re_page   = re.compile(r"\bpage\s+(\d+)\b(?:\s*(?:/|of)\s*(\d+))?", re.I)
+    re_of     = re.compile(r"\b(\d+)\s+of\s+(\d+)\b", re.I)
+    re_slash  = re.compile(r"\b(\d+)\s*/\s*(\d+)\b")
+    re_brkt   = re.compile(r"^\s*[\(\[\{]?\s*(\d{1,4})\s*[\)\]\}]?\s*$")
+    re_dash   = re.compile(r"^\s*[-–—]?\s*(\d{1,4})\s*[-–—]?\s*$")
+    re_roman  = re.compile(r"^\s*(?=[IVXLCDMivxlcdm]{1,7}\s*$)[IVXLCDMivxlcdm]+\s*$")
+
+    def roman_to_int(s: str) -> Optional[int]:
+        m = {'I':1,'V':5,'X':10,'L':50,'C':100,'D':500,'M':1000}
+        s = s.upper().strip()
+        if not s or not re_roman.match(s): return None
+        val = 0; prev = 0
+        for ch in s:
+            cur = m.get(ch, 0)
+            if cur > prev: val += cur - 2*prev
+            else: val += cur
+            prev = cur
+        return val if 1 <= val <= 4000 else None
+
+    labels: List[Optional[int]] = []
+
     with fitz.open(pdf) as doc:
         for i in range(doc.page_count):
-            text = doc[i].get_text("text")
-            cands = []
-            for line in text.splitlines():
-                m = re_num.search(line)
+            page = doc[i]
+            # 1) Prefer header/footer lines; if scarce, include more lines
+            try:
+                h = page.rect.height
+                top_band = h * 0.25
+                bot_band = h * 0.25
+                blocks = page.get_text("blocks")
+                hf_lines = []
+                for b in blocks:
+                    x0,y0,x1,y1,txt = b[0],b[1],b[2],b[3],b[4]
+                    if y0 <= top_band or y1 >= (h - bot_band):
+                        hf_lines.extend(txt.splitlines())
+                all_lines = page.get_text("text").splitlines()
+                # If header/footer gave too few lines, widen search to whole page
+                lines = hf_lines if len(hf_lines) >= 4 else all_lines
+            except Exception:
+                lines = page.get_text("text").splitlines()
+
+            # 2) Collect candidates on this page
+            cands: List[int] = []
+            for line in lines:
+                s = line.strip()
+                m = re_page.search(s)
                 if m:
                     cands.append(int(m.group(1))); continue
-                m2 = re_lone.match(line)
-                if m2:
-                    cands.append(int(m2.group(1)))
-            nums.append(min(cands, key=lambda x: abs(x-(i+1))) if cands else None)
+                m = re_of.search(s)
+                if m:
+                    cands.append(int(m.group(1))); continue
+                m = re_slash.search(s)
+                if m:
+                    cands.append(int(m.group(1))); continue
+                m = re_brkt.match(s)
+                if m:
+                    cands.append(int(m.group(1))); continue
+                m = re_dash.match(s)
+                if m:
+                    cands.append(int(m.group(1))); continue
+                if re_roman.match(s):
+                    rv = roman_to_int(s)
+                    if rv is not None:
+                        cands.append(rv); continue
 
-    present = [n for n in nums if n is not None]
+            # 3) Choose the best label for this page
+            # Prefer the candidate closest to expected (prev+1); else use physical (i+1)
+            if cands:
+                if labels and labels[-1] is not None:
+                    expected = labels[-1] + 1
+                else:
+                    expected = i + 1
+                label = min(cands, key=lambda x: abs(x - expected))
+                labels.append(label)
+            else:
+                labels.append(None)
+
+    present = [n for n in labels if n is not None]
+
+    # --- no numbers at all
     if not present:
-        return (False, "")
-    s = sorted(set(present))
-    gaps = [n for n in range(s[0], s[-1]+1) if n not in s]
-    odd_only = present and all(n % 2 == 1 for n in present)
+        return (True, "No page numbers detected")
+
+    bits: List[str] = []
+
+    # odd/even-only
+    odd_only  = present and all(n % 2 == 1 for n in present)
     even_only = present and all(n % 2 == 0 for n in present)
-    bits = []
-    if gaps:
-        bits.append(f"Page numbering gaps: {gaps[:10]}{'…' if len(gaps)>10 else ''}")
-    if odd_only or even_only:
-        bits.append("Odd pages only" if odd_only else "Even pages only")
-    return (bool(bits), "; ".join(bits))
+    if odd_only:
+        bits.append("Odd pages only")
+    if even_only:
+        bits.append("Even pages only")
+
+    # pages that lack a printed number
+    if len(present) < len(labels):
+        bits.append(f"Printed number missing on {len(labels)-len(present)}/{len(labels)} pages")
+
+    # suspicious jumps (difference > 3 between consecutive present labels, ignoring odd/even-only docs)
+    if not (odd_only or even_only):
+        prev = None
+        for idx, n in enumerate(labels, start=1):
+            if n is None:
+                continue
+            if prev is not None:
+                delta = n - prev
+                if abs(delta) > 3:
+                    bits.append(f"Suspicious numbering jump near page {idx}: {prev} → {n}")
+                    # don’t spam; one is enough to flag, but keep going for completeness
+            prev = n
+
+    # gaps in a contiguous sequence (skip on odd/even-only)
+    if not (odd_only or even_only):
+        s = sorted(set(present))
+        if s:
+            gaps = [n for n in range(s[0], s[-1] + 1) if n not in s]
+            if gaps:
+                bits.append(f"Page numbering gaps: {gaps[:10]}{'…' if len(gaps) > 10 else ''}")
+
+    return (bool(bits), "; ".join(sorted(set(bits))))
 
 def find_section_presence(text: str, compiled_syn: Dict[str, List[re.Pattern]]) -> Tuple[Dict[str, bool], Dict[str, List[str]]]:
     """Return (found_map, which_map). We record full matches (group(0)) for safety."""

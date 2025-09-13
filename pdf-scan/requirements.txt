@@ -5,3 +5,4 @@ Pillow
 rapidfuzz
 pandas
 typer
+openpyxl

@@ -5,7 +5,9 @@ Python Command to run pdf scan
 Proposal scan
 ————————————————————————
 Stpes for new env
-/opt/homebrew/bin/python3.12 -m venv .venv
+#/opt/homebrew/bin/python3.13.7 -m venv .venv
+
+python3 -m venv .venv
 
 source .venv/bin/activate
 
