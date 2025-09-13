@@ -6,3 +6,4 @@ rapidfuzz
 pandas
 typer
 openpyxl
+pypdf

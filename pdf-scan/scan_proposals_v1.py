@@ -10,22 +10,7 @@ from typing import Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
 from PIL import Image
-"""
-Handle optional OCR dependency
---------------------------------
-
-`pytesseract` is used for OCR when PDFs lack a text layer or when attempting
-to extract page numbers from rasterised header/footer regions. However, this
-library may not always be installed (for example, in restricted runtime
-environments). To ensure the script continues to work gracefully when
-`pytesseract` is unavailable, we attempt to import it and fall back to
-`None` on ImportError. The downstream helper functions check for
-`None` and disable OCR-based features accordingly.
-"""
-try:
-    import pytesseract  # type: ignore
-except ImportError:
-    pytesseract = None  # type: ignore
+import pytesseract
 import pandas as pd
 import typer
 
@@ -86,23 +71,6 @@ DEFAULT_ISSUE_RULES = [
      "Regex": r"\b(budget|costs?|expenditure|expenses?|funding)\b",
      "MustBePresent": True, "Scope": "any"},
 ]
-
-# ===============================
-# Missing-page detection thresholds
-# ===============================
-# When determining whether a PDF is missing printed page numbers, we evaluate
-# the proportion of pages containing candidate numbers in the header/footer
-# (hf_ratio), the proportion of pages with any numbers at all (any_ratio),
-# the fraction of adjacent pages exhibiting +1 sequential numbering (plus1_ratio),
-# and the ratio of unique numbers to total detected numbers (uniq_ratio).  The
-# following constants control the sensitivity of these checks.  Increase
-# HF_THRESHOLD to require page numbers on more pages; adjust ANY_THRESHOLD
-# similarly; tweak PLUS1_THRESHOLD and UNIQ_RATIO_THRESHOLD to tighten or
-# relax sequential consistency and uniqueness checks.
-HF_THRESHOLD: float = 0.80
-ANY_THRESHOLD: float = 0.95
-PLUS1_THRESHOLD: float = 0.50
-UNIQ_RATIO_THRESHOLD: float = 0.50
 
 # ===============================
 # Helpers
@@ -190,17 +158,6 @@ def ensure_ocr_pdf(pdf: Path, ocr_cache_dir: Path) -> Path:
     return pdf
 
 def page_to_text_via_ocr(page) -> str:
-    """
-    Perform OCR on a single PDF page when no text layer exists.
-
-    If the optional dependency `pytesseract` is not available, this
-    function returns an empty string so that calling code can fall back
-    to other extraction methods or skip OCR-based rules entirely.
-    """
-    # If pytesseract isn't available, skip OCR entirely
-    if pytesseract is None:
-        return ""
-    # Render the page to an image at the configured DPI and feed to Tesseract
     mat = fitz.Matrix(DPI/72, DPI/72)
     pix = page.get_pixmap(matrix=mat, alpha=False)
     img = Image.open(io.BytesIO(pix.tobytes("png")))
@@ -235,17 +192,7 @@ def _roman_to_int(s: str) -> Optional[int]:
     return val if 1 <= val <= 4000 else None
 
 def _ocr_strip_numbers(page, band: float = 0.22, where: str = "bottom") -> list[int]:
-    """OCR a horizontal strip (top/bottom) and return candidate integers.
-
-    This helper extracts a narrow band at the top or bottom of a page,
-    performs OCR on it, and returns a list of integer tokens (Arabic or
-    Roman numerals) that might represent page numbers. If OCR support
-    is unavailable (because `pytesseract` wasn't imported successfully),
-    the function returns an empty list immediately.
-    """
-    # If OCR is unavailable, return no candidates
-    if pytesseract is None:
-        return []
+    """OCR a horizontal strip (top/bottom) and return candidate integers."""
     try:
         band = max(0.08, min(0.30, float(band)))
         h, w = page.rect.height, page.rect.width
@@ -253,7 +200,6 @@ def _ocr_strip_numbers(page, band: float = 0.22, where: str = "bottom") -> list[
         mat = fitz.Matrix(DPI/72, DPI/72)
         pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
         img = Image.open(io.BytesIO(pix.tobytes("png")))
-        # Restrict Tesseract's character whitelist to digits and Roman numeral symbols
         ocr_cfg = TESS_CFG + " -c tessedit_char_whitelist=0123456789IVXLCDM"
         raw = pytesseract.image_to_string(img, lang=TESS_LANG, config=ocr_cfg)
         tokens = re.findall(r"[IVXLCDM]+|\d{1,4}", raw, flags=re.I)
@@ -267,7 +213,6 @@ def _ocr_strip_numbers(page, band: float = 0.22, where: str = "bottom") -> list[
                     out.append(rv)
         return out
     except Exception:
-        # Swallow exceptions to avoid halting the scan; treat as no candidates
         return []
 
 def _import_pypdf():
@@ -493,7 +438,7 @@ def detect_missing_pages(pdf: Path) -> Tuple[bool, str]:
     # If most pages don't have strong header/footer numbers, treat as 'no printed page numbers'
     # unless the catalog provides explicit page labels (which we still consider "not printed").
     cat_labels = _get_page_labels_via_pypdf(pdf)
-    if hf_ratio < HF_THRESHOLD:
+    if hf_ratio < 0.60:
         if not cat_labels:
             bits.append("Printed page numbers not found on a sufficient number of pages (header/footer evidence < 60%)")
         else:
@@ -506,7 +451,7 @@ def detect_missing_pages(pdf: Path) -> Tuple[bool, str]:
     if even_only: bits.append("Even pages only")
 
     # Missing printed numbers on some pages
-    if any_ratio < ANY_THRESHOLD:  # tolerate small OCR/text misses
+    if any_ratio < 0.95:  # tolerate small OCR/text misses
         missing_cnt = N - any_hits
         bits.append(f"Printed number missing on {missing_cnt}/{N} pages")
 
@@ -544,12 +489,12 @@ def detect_missing_pages(pdf: Path) -> Tuple[bool, str]:
             prev_n = None
     if pairs:
         plus1_ratio = sum(pairs) / len(pairs)
-        if plus1_ratio < PLUS1_THRESHOLD:
+        if plus1_ratio < 0.50:
             bits.append(f"Poor sequential consistency (+1 transitions in only {int(plus1_ratio*100)}% of adjacent pages)")
 
     # If the set of numbers is too small relative to page count, they may be repeated non-page numbers (e.g., a year)
     uniq_ratio = len(set(present)) / max(1, any_hits)
-    if uniq_ratio < UNIQ_RATIO_THRESHOLD:
+    if uniq_ratio < 0.50:
         bits.append("Low uniqueness of detected numbers (likely non-page numbers repeating, e.g., a year or figure code)")
 
     # Final decision
