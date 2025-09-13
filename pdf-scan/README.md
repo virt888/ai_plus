@@ -25,6 +25,17 @@ python scan_proposals.py \
   --issues-xlsx rules/issues_rules.xlsx \
   --out-sections-csv out/sections_presence.csv \
   --out-issues-csv out/proposal_scan_result.csv \
+  --out-summary-csv out/summary_report.csv \
+  --pages-limit 0 \
+  --check-pages
+
+OLD：  
+python scan_proposals.py \
+  --input-dir ./in \
+  --synonyms-csv rules/synonyms.csv \
+  --issues-xlsx rules/issues_rules.xlsx \
+  --out-sections-csv out/sections_presence.csv \
+  --out-issues-csv out/proposal_scan_result.csv \
   --pages-limit 0 \
   --check-pages
 

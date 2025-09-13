@@ -10,22 +10,7 @@ from typing import Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
 from PIL import Image
-"""
-Handle optional OCR dependency
---------------------------------
-
-`pytesseract` is used for OCR when PDFs lack a text layer or when attempting
-to extract page numbers from rasterised header/footer regions. However, this
-library may not always be installed (for example, in restricted runtime
-environments). To ensure the script continues to work gracefully when
-`pytesseract` is unavailable, we attempt to import it and fall back to
-`None` on ImportError. The downstream helper functions check for
-`None` and disable OCR-based features accordingly.
-"""
-try:
-    import pytesseract  # type: ignore
-except ImportError:
-    pytesseract = None  # type: ignore
+import pytesseract
 import pandas as pd
 import typer
 
@@ -64,6 +49,10 @@ DEFAULT_SECTION_SYNONYMS = {
 # Optional built-in defaults you may want in addition to Issues.xlsx
 # (will be used only if --with-defaults is passed)
 # ===============================
+# NOTE: The default issue rules use the "MISSING_*" prefix for consistency with
+# the user-provided Issues.xlsx.  Any legacy MUST_HAVE_* rule IDs are mapped
+# to MISSING_* later when the rules are loaded.  See the logic in the
+# `main()` function where `rename_map` is applied to each rule.
 DEFAULT_ISSUE_RULES = [
     {"IssueID": "MISSING_PAGES", "IssueName": "Missing / odd-even-only pages",
      "RuleType": "missing_pages", "Regex": "", "MustBePresent": True, "Scope": "any"},
@@ -77,32 +66,15 @@ DEFAULT_ISSUE_RULES = [
      "RuleType": "missing_section", "Section": "OutcomesValue", "Regex": "", "MustBePresent": True, "Scope": "any"},
     {"IssueID": "MISS_SEC_References", "IssueName": "Missing References section",
      "RuleType": "missing_section", "Section": "References", "Regex": "", "MustBePresent": True, "Scope": "any"},
-    {"IssueID": "MUST_HAVE_TIMELINE", "IssueName": "Timeline/schedule not found",
+    {"IssueID": "MISSING_TIMELINE", "IssueName": "Timeline/schedule not found",
      "RuleType": "keyword",
      "Regex": r"\b(timeline|schedule|gantt|milestone|work\s*plan|workplan|time\s*line)\b",
      "MustBePresent": True, "Scope": "any"},
-    {"IssueID": "MUST_HAVE_BUDGET", "IssueName": "Budget/cost not found",
+    {"IssueID": "MISSING_BUDGET", "IssueName": "Budget/cost not found",
      "RuleType": "keyword",
      "Regex": r"\b(budget|costs?|expenditure|expenses?|funding)\b",
      "MustBePresent": True, "Scope": "any"},
 ]
-
-# ===============================
-# Missing-page detection thresholds
-# ===============================
-# When determining whether a PDF is missing printed page numbers, we evaluate
-# the proportion of pages containing candidate numbers in the header/footer
-# (hf_ratio), the proportion of pages with any numbers at all (any_ratio),
-# the fraction of adjacent pages exhibiting +1 sequential numbering (plus1_ratio),
-# and the ratio of unique numbers to total detected numbers (uniq_ratio).  The
-# following constants control the sensitivity of these checks.  Increase
-# HF_THRESHOLD to require page numbers on more pages; adjust ANY_THRESHOLD
-# similarly; tweak PLUS1_THRESHOLD and UNIQ_RATIO_THRESHOLD to tighten or
-# relax sequential consistency and uniqueness checks.
-HF_THRESHOLD: float = 0.80
-ANY_THRESHOLD: float = 0.95
-PLUS1_THRESHOLD: float = 0.50
-UNIQ_RATIO_THRESHOLD: float = 0.50
 
 # ===============================
 # Helpers
@@ -190,17 +162,6 @@ def ensure_ocr_pdf(pdf: Path, ocr_cache_dir: Path) -> Path:
     return pdf
 
 def page_to_text_via_ocr(page) -> str:
-    """
-    Perform OCR on a single PDF page when no text layer exists.
-
-    If the optional dependency `pytesseract` is not available, this
-    function returns an empty string so that calling code can fall back
-    to other extraction methods or skip OCR-based rules entirely.
-    """
-    # If pytesseract isn't available, skip OCR entirely
-    if pytesseract is None:
-        return ""
-    # Render the page to an image at the configured DPI and feed to Tesseract
     mat = fitz.Matrix(DPI/72, DPI/72)
     pix = page.get_pixmap(matrix=mat, alpha=False)
     img = Image.open(io.BytesIO(pix.tobytes("png")))
@@ -235,17 +196,7 @@ def _roman_to_int(s: str) -> Optional[int]:
     return val if 1 <= val <= 4000 else None
 
 def _ocr_strip_numbers(page, band: float = 0.22, where: str = "bottom") -> list[int]:
-    """OCR a horizontal strip (top/bottom) and return candidate integers.
-
-    This helper extracts a narrow band at the top or bottom of a page,
-    performs OCR on it, and returns a list of integer tokens (Arabic or
-    Roman numerals) that might represent page numbers. If OCR support
-    is unavailable (because `pytesseract` wasn't imported successfully),
-    the function returns an empty list immediately.
-    """
-    # If OCR is unavailable, return no candidates
-    if pytesseract is None:
-        return []
+    """OCR a horizontal strip (top/bottom) and return candidate integers."""
     try:
         band = max(0.08, min(0.30, float(band)))
         h, w = page.rect.height, page.rect.width
@@ -253,7 +204,6 @@ def _ocr_strip_numbers(page, band: float = 0.22, where: str = "bottom") -> list[
         mat = fitz.Matrix(DPI/72, DPI/72)
         pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
         img = Image.open(io.BytesIO(pix.tobytes("png")))
-        # Restrict Tesseract's character whitelist to digits and Roman numeral symbols
         ocr_cfg = TESS_CFG + " -c tessedit_char_whitelist=0123456789IVXLCDM"
         raw = pytesseract.image_to_string(img, lang=TESS_LANG, config=ocr_cfg)
         tokens = re.findall(r"[IVXLCDM]+|\d{1,4}", raw, flags=re.I)
@@ -267,7 +217,6 @@ def _ocr_strip_numbers(page, band: float = 0.22, where: str = "bottom") -> list[
                     out.append(rv)
         return out
     except Exception:
-        # Swallow exceptions to avoid halting the scan; treat as no candidates
         return []
 
 def _import_pypdf():
@@ -493,7 +442,7 @@ def detect_missing_pages(pdf: Path) -> Tuple[bool, str]:
     # If most pages don't have strong header/footer numbers, treat as 'no printed page numbers'
     # unless the catalog provides explicit page labels (which we still consider "not printed").
     cat_labels = _get_page_labels_via_pypdf(pdf)
-    if hf_ratio < HF_THRESHOLD:
+    if hf_ratio < 0.60:
         if not cat_labels:
             bits.append("Printed page numbers not found on a sufficient number of pages (header/footer evidence < 60%)")
         else:
@@ -506,7 +455,7 @@ def detect_missing_pages(pdf: Path) -> Tuple[bool, str]:
     if even_only: bits.append("Even pages only")
 
     # Missing printed numbers on some pages
-    if any_ratio < ANY_THRESHOLD:  # tolerate small OCR/text misses
+    if any_ratio < 0.95:  # tolerate small OCR/text misses
         missing_cnt = N - any_hits
         bits.append(f"Printed number missing on {missing_cnt}/{N} pages")
 
@@ -544,12 +493,12 @@ def detect_missing_pages(pdf: Path) -> Tuple[bool, str]:
             prev_n = None
     if pairs:
         plus1_ratio = sum(pairs) / len(pairs)
-        if plus1_ratio < PLUS1_THRESHOLD:
+        if plus1_ratio < 0.50:
             bits.append(f"Poor sequential consistency (+1 transitions in only {int(plus1_ratio*100)}% of adjacent pages)")
 
     # If the set of numbers is too small relative to page count, they may be repeated non-page numbers (e.g., a year)
     uniq_ratio = len(set(present)) / max(1, any_hits)
-    if uniq_ratio < UNIQ_RATIO_THRESHOLD:
+    if uniq_ratio < 0.50:
         bits.append("Low uniqueness of detected numbers (likely non-page numbers repeating, e.g., a year or figure code)")
 
     # Final decision
@@ -684,6 +633,7 @@ def main(
     pages_limit: int = typer.Option(0, "--pages-limit", help="0 = all pages; otherwise limit pages per PDF for speed"),
     check_pages: bool = typer.Option(True, "--check-pages/--no-check-pages", help="Enable 'missing_pages' rules if present or defaulted"),
     with_defaults: bool = typer.Option(False, "--with-defaults/--no-defaults", help="Merge built-in default rules with Issues.xlsx"),
+    summary_csv: Path = typer.Option("out/summary_report.csv", "--out-summary-csv", help="Output CSV for summary report"),
 ):
     # 1) Load Section Synonyms
     syn_map = load_synonyms_csv(synonyms_csv)
@@ -700,6 +650,25 @@ def main(
             if r["IssueID"] not in seen:
                 rules.append(r)
 
+    # 2.1) Normalize rule IDs: map any MUST_HAVE_* IDs to MISSING_* for consistency
+    # We honour specific mappings first (e.g. MUST_HAVE_VALUE -> MISSING_VALUEOFSTUDY) then
+    # generic MUST_HAVE_* -> MISSING_* conversions.  This ensures downstream code and
+    # summaries operate on a single naming convention.
+    rename_map = {
+        "MUST_HAVE_TIMELINE": "MISSING_TIMELINE",
+        "MUST_HAVE_BUDGET": "MISSING_BUDGET",
+        "MUST_HAVE_VALUE": "MISSING_VALUEOFSTUDY",
+        "MUST_HAVE_OBJECTIVES": "MISSING_OBJECTIVES",
+    }
+    for rule in rules:
+        issue_id = rule.get("IssueID", "")
+        # Apply explicit mapping if present
+        if issue_id in rename_map:
+            rule["IssueID"] = rename_map[issue_id]
+        # Generic fallback: convert MUST_HAVE_* to MISSING_*
+        elif isinstance(issue_id, str) and issue_id.startswith("MUST_HAVE_"):
+            rule["IssueID"] = "MISSING_" + issue_id[len("MUST_HAVE_"):]
+
     # 3) Discover PDFs
     pdfs: List[Path] = []
     for root, _, files in os.walk(input_dir):
@@ -710,6 +679,9 @@ def main(
 
     sec_rows: List[dict] = []
     issue_rows: List[dict] = []
+    # Dictionaries to accumulate missing sections and issue pass/fail statuses per PDF
+    missing_sections_by_pdf: Dict[str, List[str]] = {}
+    issues_status_by_pdf: Dict[str, Dict[str, str]] = {}
 
     # 4) Process
     for idx, pdf in enumerate(pdfs, 1):
@@ -721,6 +693,11 @@ def main(
             # Section presence
             found_map, which_map = find_section_presence(text, compiled_syn)
             per_section_text: Dict[str, str] = {sec: text for sec in compiled_syn.keys()}  # simple scope
+            # Collect missing sections and initialise issue status map for this PDF
+            missing_list: List[str] = [sec for sec in compiled_syn.keys() if not found_map.get(sec, False)]
+            missing_sections_by_pdf[pdf.name] = missing_list
+            # Prepare a dict to record issue pass/fail for this PDF
+            issues_status_by_pdf[pdf.name] = {}
 
             # sections_presence.csv
             for sec in compiled_syn.keys():
@@ -755,6 +732,8 @@ def main(
                         # 因此 pass_yn 應為 "NO"
                         pass_yn = "NO" if mp_has_issue else "YES"
                     remarks = mp_rem
+                    # Record pass/fail status for this PDF and issue
+                    issues_status_by_pdf[pdf.name][issue_id] = pass_yn
                 elif rtype == "missing_section":
                     sec_raw = str(rule.get("Section", "")).strip()
                     sec_regex = str(rule.get("SectionRegex", "")).strip()
@@ -779,10 +758,14 @@ def main(
                     pass_yn = "YES" if (present == must_present) else "NO"
                     if not present:
                         remarks = "Section not detected"
+                    # Record pass/fail status for this PDF and issue
+                    issues_status_by_pdf[pdf.name][issue_id] = pass_yn
                 else:
                     ok, labels = eval_keyword_rule(text, str(rule.get("Regex", "")), must_present, scope, per_section_text)
                     pass_yn = "YES" if ok else "NO"
                     matched_labels = labels
+                    # Record pass/fail status for this PDF and issue
+                    issues_status_by_pdf[pdf.name][issue_id] = pass_yn
 
                 issue_rows.append({
                     "PDF_FILE_NAME": pdf.name,
@@ -820,6 +803,39 @@ def main(
     pd.DataFrame(sec_rows).to_csv(out_sections_csv, index=False)
     pd.DataFrame(issue_rows).to_csv(out_issues_csv, index=False)
     typer.secho(f"Wrote {out_sections_csv} and {out_issues_csv} (files scanned: {len(pdfs)})", fg=typer.colors.GREEN)
+
+    # 6) Build a summary combining missing sections and issue failures per PDF
+    summary_rows: List[Dict[str, str]] = []
+    # Order of issue IDs to append in remarks.  These IDs correspond to the
+    # normalized names (MISSING_*) rather than any legacy MUST_HAVE_* names.
+    summary_issue_order = [
+        "MISSING_TIMELINE",
+        "MISSING_BUDGET",
+        "MISSING_VALUEOFSTUDY",
+        "MISSING_OBJECTIVES",
+        "MISSING_PAGES",
+    ]
+    for pdf in pdfs:
+        fname = pdf.name
+        remarks_parts: List[str] = []
+        # Missing sections first
+        missing_secs = missing_sections_by_pdf.get(fname, [])
+        if missing_secs:
+            # The user requested to prefix missing section reports with a Chinese label.  Use
+            # "MISSING SECTIONS" to emphasise that these sections are absent.  If no sections are
+            # missing, no entry is added.
+            remarks_parts.append("MISSING SECTIONS: " + ", ".join(missing_secs))
+        # Then failed issues in specified order
+        statuses = issues_status_by_pdf.get(fname, {})
+        for issue_id in summary_issue_order:
+            status = statuses.get(issue_id)
+            if status in {"NO", "ERROR"}:
+                remarks_parts.append(issue_id)
+        summary_rows.append({"PDF_FILE_NAME": fname, "REMARKS": ", ".join(remarks_parts)})
+    # Write summary report to the requested CSV path.  Use the user-supplied
+    # --out-summary-csv argument rather than a hard-coded location.
+    pd.DataFrame(summary_rows).to_csv(summary_csv, index=False)
+    typer.secho(f"Wrote {summary_csv} (files scanned: {len(pdfs)})", fg=typer.colors.GREEN)
 
 
 if __name__ == "__main__":
