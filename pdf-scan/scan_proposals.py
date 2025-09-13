@@ -682,6 +682,9 @@ def main(
     # Dictionaries to accumulate missing sections and issue pass/fail statuses per PDF
     missing_sections_by_pdf: Dict[str, List[str]] = {}
     issues_status_by_pdf: Dict[str, Dict[str, str]] = {}
+    # Dictionaries to accumulate aggregated matched keywords and pass statuses per PDF
+    aggregated_keywords_by_pdf: Dict[str, Dict[str, str]] = {}
+    aggregated_passyn_by_pdf: Dict[str, Dict[str, str]] = {}
 
     # 4) Process
     for idx, pdf in enumerate(pdfs, 1):
@@ -698,6 +701,9 @@ def main(
             missing_sections_by_pdf[pdf.name] = missing_list
             # Prepare a dict to record issue pass/fail for this PDF
             issues_status_by_pdf[pdf.name] = {}
+            # Initialize aggregated matched keywords and pass statuses dicts for this PDF
+            aggregated_keywords_by_pdf[pdf.name] = {}
+            aggregated_passyn_by_pdf[pdf.name] = {}
 
             # sections_presence.csv
             for sec in compiled_syn.keys():
@@ -767,6 +773,10 @@ def main(
                     # Record pass/fail status for this PDF and issue
                     issues_status_by_pdf[pdf.name][issue_id] = pass_yn
 
+                # Append aggregated matched keywords and pass status for this rule, keyed by issue ID
+                kw_string = ", ".join(matched_labels) if matched_labels else ""
+                aggregated_keywords_by_pdf[pdf.name][issue_id] = kw_string
+                aggregated_passyn_by_pdf[pdf.name][issue_id] = pass_yn
                 issue_rows.append({
                     "PDF_FILE_NAME": pdf.name,
                     "ISSUE_ID": issue_id,
@@ -821,9 +831,7 @@ def main(
         # Missing sections first
         missing_secs = missing_sections_by_pdf.get(fname, [])
         if missing_secs:
-            # The user requested to prefix missing section reports with a Chinese label.  Use
-            # "MISSING SECTIONS" to emphasise that these sections are absent.  If no sections are
-            # missing, no entry is added.
+            # Prefix missing section reports with English label: MISSING SECTIONS
             remarks_parts.append("MISSING SECTIONS: " + ", ".join(missing_secs))
         # Then failed issues in specified order
         statuses = issues_status_by_pdf.get(fname, {})
@@ -831,7 +839,37 @@ def main(
             status = statuses.get(issue_id)
             if status in {"NO", "ERROR"}:
                 remarks_parts.append(issue_id)
-        summary_rows.append({"PDF_FILE_NAME": fname, "REMARKS": ", ".join(remarks_parts)})
+        # Aggregate matched keywords and pass statuses for this PDF.
+        # Build a list like "ISSUE_ID: [keywords]" for each issue.
+        kw_entries: List[str] = []
+        kw_dict = aggregated_keywords_by_pdf.get(fname, {}) or {}
+        # Only include entries with matched keywords; remove prefixes like MISS_, MISSING_, MISS_SEC_ from issue IDs
+        for _issue_id, _kw_string in kw_dict.items():
+            # Skip if no keywords matched
+            if not _kw_string or not _kw_string.strip():
+                continue
+            clean_id = _issue_id
+            # Remove specific prefixes
+            if clean_id.startswith("MISS_SEC_"):
+                clean_id = clean_id[len("MISS_SEC_"):]
+            elif clean_id.startswith("MISS_"):
+                clean_id = clean_id[len("MISS_"):]
+            elif clean_id.startswith("MISSING_"):
+                clean_id = clean_id[len("MISSING_"):]
+            kw_entries.append(f"[{clean_id}]:{_kw_string}")
+        aggregated_kw_string = "; ".join(kw_entries)
+        # Determine aggregated PASS_YN: YES only if all statuses are YES or N/A; otherwise NO.
+        passes_dict = aggregated_passyn_by_pdf.get(fname, {}) or {}
+        if passes_dict:
+            aggregated_pass_string = "YES" if all(_status in {"YES", "N/A"} for _status in passes_dict.values()) else "NO"
+        else:
+            aggregated_pass_string = "YES"
+        summary_rows.append({
+            "PDF_FILE_NAME": fname,
+            "MATCHED_KEYWORDS": aggregated_kw_string,
+            "ALL_PASS": aggregated_pass_string,
+            "REMARKS": ", ".join(remarks_parts)
+        })
     # Write summary report to the requested CSV path.  Use the user-supplied
     # --out-summary-csv argument rather than a hard-coded location.
     pd.DataFrame(summary_rows).to_csv(summary_csv, index=False)
