@@ -26,7 +26,6 @@ Windows 安裝與執行指南
 
 	.\.venv\Scripts\activate
 
-
 啟用成功後，提示符前方會出現 (.venv)，表示目前位於虛擬環境中。
 
 3. 安裝相依套件
