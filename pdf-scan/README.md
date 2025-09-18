@@ -5,6 +5,9 @@ Python Command to run pdf scan
 Proposal scan
 ————————————————————————
 Stpes for new env
+
+brew install ocrmypdf
+
 python3 -m venv .venv
 
 source .venv/bin/activate
