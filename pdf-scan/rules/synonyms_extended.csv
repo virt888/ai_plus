@@ -1,0 +1,6 @@
+Section,KeywordRegex
+Title,^\s*(proposed\s+topic|title of research|research|project title|title|topic?|aims?)\b
+Background,^\s*(background|overview|introduction)\b
+Methodology,^\s*(methodology|research methods?|materials?|methods?)\b
+OutcomesValue,^\s*(?:\d+[\.\)]\s*)?(?:project\s+)?(?:outcomes?|value|findings|analysis|evaluations?|assessments?)\b
+References,^\s*(list of references?|reference list|references?|bibliography|works cited)\b

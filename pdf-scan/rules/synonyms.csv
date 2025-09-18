@@ -1,6 +1,6 @@
 Section,KeywordRegex
-Title,^\s*(proposed\s+topic|title of research|project title|title|topic?|aims?)\b
-Background,^\s*(background|overview|introduction)\b
-Methodology,^\s*(methodology|research methods|materials and methods)\b
-OutcomesValue,^\s*(?:\d+[\.\)]\s*)?(?:project\s+)?(?:expected\s+|anticipated\s+)?(?:outcomes?|results?|deliverables|outputs?|impact|value|significance|importance|contribution|novelty|innovation|findings)\b
-References,^\s*(list of references?|reference list|references?|bibliography|works cited)\b
+Title,\b(proposed topic|title of research|project title|title|topic)\b
+Background,\b(background|overview|introduction)\b
+Methodology,\b(methodology|research methods?|methods?)\b
+OutcomesValue,\b(outcomes?|values?|outcome? and value?|findings?|analysis)\b
+References,\b(references?|bibliography)\b
