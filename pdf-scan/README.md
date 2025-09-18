@@ -6,6 +6,7 @@ Proposal scan
 ————————————————————————
 Stpes for new env
 
+#fixed ocr_out folder issue
 brew install ocrmypdf
 
 python3 -m venv .venv
